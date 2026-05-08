@@ -1,15 +1,13 @@
 import os
 import requests
 import pandas as pd
-from bs4 import BeautifulSoup
 
 # 從 GitHub Secrets 取得變數
 LINE_ACCESS_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
 LINE_USER_ID = os.getenv('LINE_USER_ID')
 
 def get_kgi_shilin_real_data():
-    # 凱基士林代號 9238。這裡使用「神秘金字塔」或「玩股網」的公開路徑邏輯
-    # 這裡示範抓取網頁資料的標準寫法
+    # 凱基士林代號 9238
     url = "https://www.wantgoo.com/stock/astock/agentbuy?agentId=9238"
     
     headers = {
@@ -19,22 +17,23 @@ def get_kgi_shilin_real_data():
     try:
         res = requests.get(url, headers=headers, timeout=15)
         if res.status_code != 200:
-            return None, f"網頁連線失敗，狀態碼：{res.status_code}"
+            return None, f"網頁連線失敗 (Code: {res.status_code})"
 
-        # 使用 pandas 讀取網頁表格
+        # 使用 pandas 解析網頁中的表格
+        # flavor='bs4' 搭配 beautifulsoup4 使用
         dfs = pd.read_html(res.text)
         if not dfs:
-            return None, "找不到資料表格"
+            return None, "網頁內找不到資料表格"
         
-        df = dfs[0] # 通常第一個表格就是買超排行
+        df = dfs[0] 
         
-        # 根據實際網頁欄位調整，假設欄位 0 是股票名稱，欄位 2 是買超張數
-        # 這裡先過濾出買進的標的
+        # 過濾買超張數 > 0 的股票
+        # 假設：第 0 欄是股票，第 2 欄是買超張數 (這在大多數財經站是標準格式)
         all_buys = df[df.iloc[:, 2] > 0] 
         return all_buys, None
 
     except Exception as e:
-        return None, f"發生異常: {str(e)}"
+        return None, f"執行異常: {str(e)}"
 
 def send_line_message(buy_df, error_msg):
     url = "https://api.line.me/v2/bot/message/push"
@@ -44,15 +43,17 @@ def send_line_message(buy_df, error_msg):
     }
     
     if error_msg:
-        content = f"❌ 抓取錯誤: {error_msg}"
+        content = f"❌ 系統錯誤通知:\n{error_msg}"
     elif buy_df is None or buy_df.empty:
-        content = "📋 今日凱基士林無買超資料。"
+        content = "📋 今日【凱基士林】無買超標的。"
     else:
-        content = "📋 【凱基士林】今日全部買超清單\n"
+        content = "📋 【凱基士林】今日買超全清單\n"
         content += "--------------------------\n"
-        # 這裡根據實際表格欄位 index 取值，通常 0 是名稱，2 是張數
         for _, row in buy_df.iterrows():
-            content += f"✅ {row.iloc[0]}: +{row.iloc[2]}張\n"
+            # 取得股票名稱與買超張數
+            name = str(row.iloc[0])
+            amount = str(row.iloc[2])
+            content += f"✅ {name}: +{amount}張\n"
     
     payload = {
         "to": LINE_USER_ID,
@@ -60,9 +61,8 @@ def send_line_message(buy_df, error_msg):
     }
     
     response = requests.post(url, headers=headers, json=payload)
-    print(f"LINE 傳送狀態: {response.status_code}, 回傳: {response.text}")
+    print(f"LINE Status: {response.status_code}, Response: {response.text}")
 
 if __name__ == "__main__":
     df, err = get_kgi_shilin_real_data()
     send_line_message(df, err)
-
