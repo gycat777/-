@@ -8,42 +8,39 @@ LINE_ACCESS_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
 LINE_USER_ID = os.getenv('LINE_USER_ID')
 
 def get_kgi_shilin_real_data():
-    # 凱基士林的分點代號 (根據證交所代號)
-    target_broker = "9238" 
-    
-    # 測試用網址：使用較不擋爬蟲的財經站或 CSV 資料源
-    # 改用 nlog 或其他資料備份點，這裡先示範結構
-    url = f"https://fubon-ebroker.com.tw/z/zg/zgb/zgb0.aspx?a=9230&b={target_broker}&c=E&d=1" # 範例格式
+    # 凱基士林代號：9238
+    # 使用 NLOG 或備份資料源，這些站點對自動化程式較友善
+    url = "https://nlog.cc/t/stock/broker/9238" 
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     try:
-        # 改用更簡潔的爬蟲方式，如果網頁還是 403，這裡會抓取模擬格式或轉換 API
-        res = requests.get(url, headers=headers, timeout=15)
-        res.encoding = 'big5' # 台灣財經站常用編碼
-        
-        if res.status_code == 403:
-            return None, "網站封鎖了 GitHub IP (403)。建議更換資料來源或稍後再試。"
+        res = requests.get(url, headers=headers, timeout=20)
+        if res.status_code != 200:
+            return None, f"連線失敗，狀態碼: {res.status_code}"
 
+        # 讀取 HTML 表格
         dfs = pd.read_html(io.StringIO(res.text))
         if not dfs:
             return None, "找不到資料表格"
             
-        # 尋找含有股票資訊的表格
-        df = dfs[2] # 根據富邦/網頁結構調整，通常在第3個表格
+        # NLOG 的結構中，通常第一個表格是買超排行
+        df = dfs[0]
         
-        # 進行清洗：過濾買超
-        # 假設第1欄是股票名稱，第2欄是買張，第3欄是賣張
-        df['買超'] = pd.to_numeric(df.iloc[:, 2], errors='coerce') - pd.to_numeric(df.iloc[:, 3], errors='coerce')
+        # 清洗資料：過濾買超張數 > 0
+        # 欄位通常為：股票名稱 (index 0), 買超 (index 1)
+        # 我們將資料轉為數值後過濾
+        df.columns = ['股票', '買超', '賣超', '合計'] # 根據實際結構命名
+        df['買超'] = pd.to_numeric(df['買超'], errors='coerce').fillna(0)
+        
         all_buys = df[df['買超'] > 0].copy()
         
         return all_buys, None
 
     except Exception as e:
-        # 如果還是 403 或報錯，我們改用更穩定的替代路徑
-        return None, f"執行異常 (可能來源端變動): {str(e)}"
+        return None, f"抓取異常: {str(e)}"
 
 def send_line_message(buy_df, error_msg):
     url = "https://api.line.me/v2/bot/message/push"
@@ -53,15 +50,15 @@ def send_line_message(buy_df, error_msg):
     }
     
     if error_msg:
-        # 如果失敗，回報給 LINE 讓我們知道狀況
-        content = f"⚠️ 凱基士林抓取失敗\n原因: {error_msg}\n(可能是網站阻擋了 GitHub 自動執行)"
+        content = f"⚠️ 凱基士林資料更新失敗\n原因: {error_msg}"
     elif buy_df is None or buy_df.empty:
-        content = "📋 今日【凱基士林】無買超標的，或資料尚未更新。"
+        content = "📋 今日【凱基士林】無買超標的。"
     else:
         content = "📋 【凱基士林】今日買超全清單\n"
         content += "--------------------------\n"
-        for _, row in buy_df.iterrows():
-            name = str(row.iloc[0]).replace(' ', '')
+        # 取前 50 筆（避免訊息過長導致 LINE 拒收）
+        for _, row in buy_df.head(50).iterrows():
+            name = str(row['股票']).split(' ')[0] # 去除多餘空格
             amount = int(row['買超'])
             content += f"✅ {name}: +{amount}張\n"
     
