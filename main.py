@@ -1,16 +1,16 @@
 import os
 import requests
 import pandas as pd
-import io
 
 # 從 GitHub Secrets 取得變數
 LINE_ACCESS_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
 LINE_USER_ID = os.getenv('LINE_USER_ID')
 
 def get_kgi_shilin_real_data():
-    # 凱基士林代號：9238
-    # 使用 NLOG 或備份資料源，這些站點對自動化程式較友善
-    url = "https://nlog.cc/t/stock/broker/9238" 
+    # 凱基士林券商代號: 9238
+    # 我們改用證交所/官方公開資料的高速介面 (模擬資料流)
+    # 這裡選擇一個較少阻擋的數據接口
+    url = "https://fubon-ebroker.com.tw/z/zg/zgb/zgb0.aspx?a=9230&b=9238&c=E&d=1"
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -18,29 +18,31 @@ def get_kgi_shilin_real_data():
     
     try:
         res = requests.get(url, headers=headers, timeout=20)
-        if res.status_code != 200:
-            return None, f"連線失敗，狀態碼: {res.status_code}"
+        res.encoding = 'big5' # 台灣財經站點多為 big5 編碼
+        
+        # 這裡改用比較彈性的解析方式
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 尋找所有表格
+        tables = soup.find_all('table')
+        if len(tables) < 4:
+            return None, "券商暫無進出資料 (可能今日未交易或尚未更新)"
 
-        # 讀取 HTML 表格
-        dfs = pd.read_html(io.StringIO(res.text))
-        if not dfs:
-            return None, "找不到資料表格"
-            
-        # NLOG 的結構中，通常第一個表格是買超排行
-        df = dfs[0]
+        # 鎖定進出明細表格 (通常是 id 為 'oMainTable' 或第 4 個 table)
+        target_table = tables[3] 
+        df = pd.read_html(str(target_table))[0]
         
-        # 清洗資料：過濾買超張數 > 0
-        # 欄位通常為：股票名稱 (index 0), 買超 (index 1)
-        # 我們將資料轉為數值後過濾
-        df.columns = ['股票', '買超', '賣超', '合計'] # 根據實際結構命名
-        df['買超'] = pd.to_numeric(df['買超'], errors='coerce').fillna(0)
+        # 清洗資料：過濾買超
+        # 欄位 0: 股票名稱, 欄位 1: 買進, 欄位 2: 賣出
+        df.columns = ['股票', '買進', '賣出', '買賣超', '佔比']
+        df['買超張數'] = pd.to_numeric(df['買進'], errors='coerce') - pd.to_numeric(df['賣出'], errors='coerce')
         
-        all_buys = df[df['買超'] > 0].copy()
-        
+        all_buys = df[df['買超張數'] > 0].copy()
         return all_buys, None
 
     except Exception as e:
-        return None, f"抓取異常: {str(e)}"
+        return None, f"數據處理異常: {str(e)}"
 
 def send_line_message(buy_df, error_msg):
     url = "https://api.line.me/v2/bot/message/push"
@@ -50,16 +52,17 @@ def send_line_message(buy_df, error_msg):
     }
     
     if error_msg:
-        content = f"⚠️ 凱基士林資料更新失敗\n原因: {error_msg}"
+        content = f"⚠️ 凱基士林監控回報\n{error_msg}"
     elif buy_df is None or buy_df.empty:
-        content = "📋 今日【凱基士林】無買超標的。"
+        content = "📋 今日【凱基士林】無進出標的。"
     else:
         content = "📋 【凱基士林】今日買超全清單\n"
         content += "--------------------------\n"
-        # 取前 50 筆（避免訊息過長導致 LINE 拒收）
-        for _, row in buy_df.head(50).iterrows():
-            name = str(row['股票']).split(' ')[0] # 去除多餘空格
-            amount = int(row['買超'])
+        for _, row in buy_df.iterrows():
+            name = str(row['股票']).strip()
+            # 排除非股票名稱的列
+            if "股票" in name or "合計" in name: continue
+            amount = int(row['買超張數'])
             content += f"✅ {name}: +{amount}張\n"
     
     payload = {
