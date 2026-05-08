@@ -1,50 +1,27 @@
-import os
-import requests
-import pandas as pd
-
-# 從 GitHub Secrets 取得變數
-LINE_ACCESS_TOKEN = os.getenv('LINE_ACCESS_TOKEN')
-LINE_USER_ID = os.getenv('LINE_USER_ID')
-
 def get_kgi_shilin_all_buys():
-    # 這裡目前是模擬數據，後續你可以接入實際爬蟲
-    # 凱基士林代號為 9238
-    data = {
-        '股票': ['台積電', '鴻海', '長榮', '陽明', '中信金', '群創', '聯發科', '欣興', '長榮航'],
-        '張數': [500, 320, 150, -450, -210, -600, 100, 50, 80]
-    }
-    df = pd.DataFrame(data)
+    # 凱基士林的分點代號是 9238 (或 9217，視資料來源而定)
+    branch_id = '9238' 
     
-    # 篩選出所有「買超」的股票 (張數 > 0)
-    all_buys = df[df['張數'] > 0].sort_values(by='張數', ascending=False)
+    # 這裡是以「玩股網」或其他公開資訊站點為目標的範例 URL (邏輯示意)
+    # 實際運作時，程式會去解析 HTML 表格
+    url = f"https://www.wantgoo.com/stock/astock/agentbuy?agentId={branch_id}"
     
-    return all_buys
-
-def send_line_message(buy_df):
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_ACCESS_TOKEN}"
-    }
-    
-    # 組合訊息
-    msg = "📋 【凱基士林】今日買超清單 (全部)\n"
-    msg += "--------------------------\n"
-    
-    if buy_df.empty:
-        msg += "今日無買超標的。"
-    else:
-        for _, row in buy_df.iterrows():
-            msg += f"✅ {row['股票']}: +{row['張數']}張\n"
-    
-    payload = {
-        "to": LINE_USER_ID,
-        "messages": [{"type": "text", "text": msg}]
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"傳送狀態: {response.status_code}")
-
-if __name__ == "__main__":
-    all_buy_data = get_kgi_shilin_all_buys()
-    send_line_message(all_buy_data)
+    try:
+        # 使用 pandas 直接嘗試讀取網頁中的表格
+        # 注意：實際執行可能需要 header 偽裝成瀏覽器，否則會被擋
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        dfs = pd.read_html(response.text)
+        
+        # 取得買賣超表格 (通常是頁面上的第一個或第二個表格)
+        df = dfs[0] 
+        
+        # 假設欄位名稱是 '股票名稱' 和 '買超張數'
+        # 這裡會根據實際網頁欄位名稱做微調
+        all_buys = df[df['買超張數'] > 0].sort_values(by='買超張數', ascending=False)
+        return all_buys
+        
+    except Exception as e:
+        print(f"抓取資料發生錯誤: {e}")
+        # 如果抓不到真實資料，回傳空清單，避免程式崩潰
+        return pd.DataFrame()
